@@ -24,7 +24,7 @@ from cmk.agent_based.v2 import (
 
 def parse_cloudflare_warp_devices(string_table: StringTable) -> Optional[Dict[str, Any]]:
     """Parse cloudflare_warp_devices section"""
-    parsed: Dict[str, Any] = {'devices_total': 0, 'devices': {}}
+    parsed: Dict[str, Any] = {'devices_total': 0, 'devices': {}, 'name_to_id': {}}
     
     for line in string_table:
         if len(line) < 1:
@@ -51,6 +51,12 @@ def parse_cloudflare_warp_devices(string_table: StringTable) -> Optional[Dict[st
                     parsed['devices'][device_id] = {}
                 
                 parsed['devices'][device_id][metric_name] = value
+                
+                # Build name to ID mapping when we see the name
+                if metric_name == 'name':
+                    # Sanitize name (replace spaces with underscores, same as in special_agents)
+                    sanitized_name = value.replace(' ', '_')
+                    parsed['name_to_id'][sanitized_name] = device_id
     
     return parsed if parsed else None
 
@@ -63,9 +69,9 @@ agent_section_cloudflare_warp_devices = AgentSection(
 
 def discover_cloudflare_warp_devices(section: Optional[Dict[str, Any]]) -> DiscoveryResult:
     """Discover Cloudflare WARP devices"""
-    if section is not None and 'devices' in section:
-        for device_id in section['devices'].keys():
-            yield Service(item=device_id)
+    if section is not None and 'name_to_id' in section:
+        for device_name in section['name_to_id'].keys():
+            yield Service(item=device_name)
 
 
 def check_cloudflare_warp_devices(
@@ -78,12 +84,18 @@ def check_cloudflare_warp_devices(
         yield Result(state=State.UNKNOWN, summary="No WARP devices data available")
         return
     
-    if 'devices' not in section or item not in section['devices']:
+    # Find device_id from name
+    if 'name_to_id' not in section or item not in section['name_to_id']:
         yield Result(state=State.UNKNOWN, summary=f"Device '{item}' not found")
         return
     
-    device_data = section['devices'][item]
-    device_name = device_data.get('name', 'unknown')
+    device_id = section['name_to_id'][item]
+    
+    if 'devices' not in section or device_id not in section['devices']:
+        yield Result(state=State.UNKNOWN, summary=f"Device '{item}' not found")
+        return
+    
+    device_data = section['devices'][device_id]
     platform = device_data.get('platform', 'unknown')
     version = device_data.get('version', 'unknown')
     status = device_data.get('status', 'unknown')
@@ -103,9 +115,12 @@ def check_cloudflare_warp_devices(
         device_state = State.UNKNOWN
     
     # Build summary
-    summary_parts = [f"Name: {device_name}"]
+    summary_parts = []
     if status != 'unknown':
         summary_parts.append(f"Status: {status}")
+    
+    if not summary_parts:
+        summary_parts.append("WARP Device")
     
     yield Result(state=device_state, summary=" | ".join(summary_parts))
     
