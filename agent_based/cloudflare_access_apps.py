@@ -26,7 +26,7 @@ from cmk.agent_based.v2 import (
 
 def parse_cloudflare_access_apps(string_table: StringTable) -> Optional[Dict[str, Any]]:
     """Parse cloudflare_access_apps section"""
-    parsed: Dict[str, Any] = {'apps_total': 0, 'apps': {}}
+    parsed: Dict[str, Any] = {'apps_total': 0, 'apps': {}, 'name_to_id': {}}
     
     for line in string_table:
         if len(line) < 1:
@@ -53,6 +53,12 @@ def parse_cloudflare_access_apps(string_table: StringTable) -> Optional[Dict[str
                     parsed['apps'][app_id] = {}
                 
                 parsed['apps'][app_id][metric_name] = value
+                
+                # Build name to ID mapping when we see the name
+                if metric_name == 'name':
+                    # Sanitize name (replace spaces with underscores, same as in special_agents)
+                    sanitized_name = value.replace(' ', '_')
+                    parsed['name_to_id'][sanitized_name] = app_id
     
     return parsed if parsed else None
 
@@ -65,9 +71,9 @@ agent_section_cloudflare_access_apps = AgentSection(
 
 def discover_cloudflare_access_apps(section: Optional[Dict[str, Any]]) -> DiscoveryResult:
     """Discover Cloudflare Access Applications"""
-    if section is not None and 'apps' in section:
-        for app_id in section['apps'].keys():
-            yield Service(item=app_id)
+    if section is not None and 'name_to_id' in section:
+        for app_name in section['name_to_id'].keys():
+            yield Service(item=app_name)
 
 
 def check_cloudflare_access_apps(
@@ -80,11 +86,18 @@ def check_cloudflare_access_apps(
         yield Result(state=State.UNKNOWN, summary="No Access Apps data available")
         return
     
-    if 'apps' not in section or item not in section['apps']:
+    # Find app_id from name
+    if 'name_to_id' not in section or item not in section['name_to_id']:
         yield Result(state=State.UNKNOWN, summary=f"App '{item}' not found")
         return
     
-    app_data = section['apps'][item]
+    app_id = section['name_to_id'][item]
+    
+    if 'apps' not in section or app_id not in section['apps']:
+        yield Result(state=State.UNKNOWN, summary=f"App '{item}' not found")
+        return
+    
+    app_data = section['apps'][app_id]
     app_name = app_data.get('name', 'unknown')
     domain = app_data.get('domain', 'unknown')
     app_type = app_data.get('type', 'unknown')
@@ -144,11 +157,14 @@ def check_cloudflare_access_apps(
             pass
     
     # Build summary
-    summary_parts = [f"Name: {app_name}"]
+    summary_parts = []
     if domain != 'unknown':
         summary_parts.append(f"Domain: {domain}")
     if app_type != 'unknown':
         summary_parts.append(f"Type: {app_type}")
+    
+    if not summary_parts:
+        summary_parts.append("Access App")
     
     yield Result(state=State.OK, summary=" | ".join(summary_parts))
     
